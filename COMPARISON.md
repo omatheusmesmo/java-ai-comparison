@@ -253,7 +253,6 @@ Automatic via CDI — just annotate the parameter.
 | RAG Java LOC | ~30 | 52 + 15 manual augmentation | **0** |
 | Manual wiring | Extensive | Moderate | **None** |
 | Dependencies to manage | 8 explicit | 4 (+ BOM) | **BOM-managed** |
-| Time to "Hello AI" | ~30 min | ~15 min | **~5 min** |
 | Learning curve | High | Medium | **Low** |
 
 **Bottom line**: Quarkus LangChain4j achieves the same functionality with **53% less code** than LangChain4j Pure and **62% less** than Spring AI. RAG requires zero Java code. The combination of CDI, declarative annotations, and EasyRAG makes it the most productive choice for Java AI applications.
