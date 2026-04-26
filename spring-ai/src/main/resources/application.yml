@@ -1,0 +1,14 @@
+server:
+  port: 9090
+
+spring:
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        model: qwen3:1.7b
+        options:
+          num-predict: 512
+        read-timeout: 5m
+      embedding:
+        model: nomic-embed-text

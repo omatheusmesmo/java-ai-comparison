@@ -1,0 +1,11 @@
+target/
+.mvn/wrapper/maven-wrapper.jar
+*.class
+*.jar
+*.log
+.settings/
+.classpath
+.project
+.idea/
+*.iml
+easy-rag-embeddings.json

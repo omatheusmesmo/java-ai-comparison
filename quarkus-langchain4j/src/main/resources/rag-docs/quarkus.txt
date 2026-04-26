@@ -1,0 +1,7 @@
+Quarkus is a Kubernetes-native Java framework tailored for GraalVM and HotSpot.
+Quarkus makes Java leaner and faster, with fast startup and low memory usage.
+Quarkus supports imperative and reactive code in the same application.
+Dev Services automatically provisions containers for databases, message brokers, and AI models.
+Quarkus LangChain4j integrates LangChain4j with a declarative, developer-friendly API.
+The @RegisterAiService annotation creates AI services without writing implementation classes.
+EasyRAG provides zero-configuration RAG by setting a single property in application.properties.
