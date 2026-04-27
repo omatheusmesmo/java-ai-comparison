@@ -1,33 +1,34 @@
 # Java AI Libraries Comparison
 
-Comparison of three approaches to building AI-powered Java applications using **Ollama** (local LLM) with **qwen3:1.7b** for chat and **nomic-embed-text** for embeddings.
+Comparison of four approaches to building AI-powered Java applications using **Ollama** (local LLM) with **qwen3:1.7b** for chat and **nomic-embed-text** for embeddings.
 
-All three projects implement the same 3-endpoint design:
+All four projects implement the same 3-endpoint design:
 - `/ai/chat` — chat with memory, no RAG
 - `/ai/rag` — chat with RAG + memory
 - `/ai/tools` — tool calling with memory, no RAG
 
 ## Projects
 
-| | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
-|---|---|---|---|
-| **Version** | 1.13.1 | 1.1.4 | 3.34.6 (Quarkus) |
-| **Web Framework** | Javalin 6.7.0 | Spring Boot 3.5.0 | Quarkus (JAX-RS) |
-| **Java** | 25 | 25 | 25 |
-| **RAG Approach** | Manual ContentRetriever | RetrievalAugmentationAdvisor | EasyRAG (3 properties) |
-| **Memory Approach** | chatMemoryProvider lambda | Auto-configured ChatMemory bean | application.properties + @ApplicationScoped |
+| | LangChain4j Pure | Spring AI | Quarkus LangChain4j + EasyRAG | Quarkus LangChain4j (manual RAG) |
+|---|---|---|---|---|
+| **Version** | 1.13.1 | 1.1.4 | 1.8.4 | 1.8.4 |
+| **Web Framework** | Javalin 6.7.0 | Spring Boot 3.5.0 | Quarkus (JAX-RS) | Quarkus (JAX-RS) |
+| **Java** | 25 | 25 | 25 | 25 |
+| **RAG Approach** | Manual ContentRetriever | RetrievalAugmentationAdvisor | EasyRAG (3 properties) | Manual RetrievalAugmentor |
+| **Document Parser** | TextDocumentParser | TextReader | Apache Tika | TextDocumentParser |
+| **Memory Approach** | chatMemoryProvider lambda | Auto-configured ChatMemory bean | application.properties + @ApplicationScoped | application.properties + @ApplicationScoped |
 
 ## Code Size Comparison
 
-| File | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
-|---|---|---|---|
-| Main/Resource | `Application.java` (145) | `AiResource.java` (91) | `AiResource.java` (39) |
-| AI Service(s) | `Assistant.java` (9), `RagAssistant.java` (8), `ToolAssistant.java` (8) | _(inline ChatClients)_ | `Assistant.java` (17), `RagAssistant.java` (12) |
-| Tools | `CalculatorTool.java` (22) | `CalculatorTool.java` (28) | `CalculatorTool.java` (24) |
-| RAG Config | _(inline in Application)_ | `RagConfig.java` (50) | _(zero — EasyRAG)_ |
-| App Entry | _(same Application)_ | `Application.java` (11) | _(auto-generated)_ |
-| **Total Java LOC** | **192** | **180** | **92** |
-| Config | `logback.xml` (13) | `application.yml` (14) | `application.properties` (15) |
+| File | LangChain4j Pure | Spring AI | Quarkus LangChain4j + EasyRAG | Quarkus LangChain4j (manual RAG) |
+|---|---|---|---|---|
+| Main/Resource | `Application.java` (145) | `AiResource.java` (91) | `AiResource.java` (39) | `AiResource.java` (39) |
+| AI Service(s) | `Assistant.java` (9), `RagAssistant.java` (8), `ToolAssistant.java` (8) | _(inline ChatClients)_ | `Assistant.java` (17), `RagAssistant.java` (12) | `Assistant.java` (17), `RagAssistant.java` (12) |
+| Tools | `CalculatorTool.java` (22) | `CalculatorTool.java` (28) | `CalculatorTool.java` (24) | `CalculatorTool.java` (24) |
+| RAG Config | _(inline in Application)_ | `RagConfig.java` (50) | _(zero — EasyRAG)_ | `RagConfig.java` (66) |
+| App Entry | _(same Application)_ | `Application.java` (11) | _(auto-generated)_ | _(auto-generated)_ |
+| **Total Java LOC** | **192** | **180** | **92** | **~117** |
+| Config | `logback.xml` (13) | `application.yml` (14) | `application.properties` (15) | `application.properties` (10) |
 
 ## Feature-by-Feature: Chat + Memory
 
@@ -169,9 +170,48 @@ quarkus.langchain4j.easy-rag.max-segment-size=200
 
 The `EasyRAG` extension handles loading, splitting, embedding, storing, and retrieving. It auto-creates a `RetrievalAugmentor` CDI bean that `@RegisterAiService` picks up. `NoRetrievalAugmentorSupplier` opts out on non-RAG services. Caches embeddings to disk so you don't re-process on every restart.
 
+### Quarkus LangChain4j (manual RAG) — ~25 lines, no Tika
+
+EasyRAG's zero-config convenience comes with a tradeoff: Apache Tika's classpath scanning adds ~5s to cold start. If you don't need multi-format document parsing, you can replace EasyRAG with a manual RAG pipeline:
+
+```java
+public class RagConfig {
+    private volatile RetrievalAugmentor augmentor;
+
+    void onStart(@Observes StartupEvent ev, EmbeddingModel embeddingModel) {
+        augmentor = buildRetrievalAugmentor(embeddingModel);
+    }
+
+    @Produces @ApplicationScoped
+    public RetrievalAugmentor retrievalAugmentor() { return augmentor; }
+
+    private RetrievalAugmentor buildRetrievalAugmentor(EmbeddingModel embeddingModel) {
+        EmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
+        DocumentParser parser = new TextDocumentParser();
+        List<Document> documents = FileSystemDocumentLoader.loadDocuments(
+            Path.of("src/main/resources/rag-docs"), parser);
+        DocumentSplitter splitter = DocumentSplitters.recursive(200, 30);
+        EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
+            .documentSplitter(splitter)
+            .embeddingModel(embeddingModel)
+            .embeddingStore(embeddingStore)
+            .build();
+        ingestor.ingest(documents);
+        ContentRetriever contentRetriever = EmbeddingStoreContentRetriever.builder()
+            .embeddingStore(embeddingStore)
+            .embeddingModel(embeddingModel)
+            .maxResults(3).minScore(0.5).build();
+        return DefaultRetrievalAugmentor.builder()
+            .contentRetriever(contentRetriever).build();
+    }
+}
+```
+
+Same pipeline structure as LangChain4j Pure's ~30 lines, but in a CDI bean with `@Observes StartupEvent` for eager initialization. The `RagAssistant` interface stays identical: `@RegisterAiService` automatically picks up the CDI-produced `RetrievalAugmentor`. Cold start drops from ~7s to ~2.1s, matching LangChain4j Pure. Same framework, same runtime, just without Tika in the classpath.
+
 ## Feature-by-Feature: Tools / Function Calling
 
-The tool definitions are nearly identical across all three. The difference is registration.
+The tool definitions are nearly identical across all projects. The difference is registration.
 
 ### LangChain4j Pure
 
@@ -250,7 +290,7 @@ Just annotate the parameter. CDI handles the rest. `@ApplicationScoped` ensures 
 | Feature | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
 |---|---|---|---|
 | Dev Services (auto-start Ollama) | No | No | **Yes** |
-| Native Image (GraalVM) | Manual setup | Community support | **Out of the box** |
+| Native Image (GraalVM) | Manual setup | Community support | **Out of the box** (manual RAG variant) |
 | Live Reload | No | DevTools (classpath) | **Dev Mode (instant)** |
 | Config-driven RAG | No | No | **EasyRAG** |
 | Zero-config AI Service | No | No | **@RegisterAiService** |
@@ -259,48 +299,48 @@ Just annotate the parameter. CDI handles the rest. `@ApplicationScoped` ensures 
 
 ## Runtime Metrics
 
-Measured on Java 25, Linux, with Ollama running locally (qwen3:1.7b chat, nomic-embed-text embeddings). RSS measured after 60s warmup (JVM stabilized). See `scripts/measure.sh` for methodology.
+Measured on Java 25, Linux, with Ollama running locally (qwen3:1.7b chat, nomic-embed-text embeddings). RSS measured after 60s warmup (JVM stabilized). See `scripts/Measure.java` for the measurement script (JBang).
 
 ### Cold Start (first startup, all re-embed documents)
 
-| Metric | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
-|---|---|---|---|
-| **Startup (self-reported)** | 125ms (Javalin) | ~3.0s (Spring Boot) | ~6.0s (Quarkus) |
-| **Startup (wall-clock)** | ~1.1s | ~4.3s | ~6.4s |
-| **RSS Memory** | ~114MB | ~331MB | ~247MB |
+| Metric | LangChain4j Pure | Spring AI | Quarkus LangChain4j + EasyRAG | Quarkus LangChain4j (manual RAG) |
+|---|---|---|---|---|
+| **Startup (wall-clock)** | ~2.0s | ~5.6s | ~7.0s | **~2.1s** |
+| **Startup (self-reported)** | 181ms (Javalin only) | 4.9s | 6.8s | **2.0s** |
+| **RSS Memory** | ~116MB | ~329MB | ~237MB | **~155MB** |
 
-### Warm Start (Quarkus with cached embeddings)
+### Warm Start (Quarkus LangChain4j with EasyRAG, cached embeddings)
 
-| Metric | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
-|---|---|---|---|
-| **Startup (self-reported)** | ~125ms (Javalin) | ~3.0s (Spring Boot) | ~0.9s (Quarkus) |
-| **Startup (wall-clock)** | ~1.1s | ~4.3s | ~1.1s |
-| **RSS Memory** | ~114MB | ~331MB | ~119MB |
+| Metric | LangChain4j Pure | Spring AI | Quarkus LangChain4j + EasyRAG (warm) | Quarkus LangChain4j (manual RAG) |
+|---|---|---|---|---|
+| **Startup (wall-clock)** | ~2.0s | ~5.6s | **~1.7s** | ~2.1s |
+| **Startup (self-reported)** | 181ms (Javalin only) | 4.9s | **1.3s** | 2.0s |
+| **RSS Memory** | ~116MB | ~329MB | **~123MB** | ~155MB |
 
-Quarkus's Easy RAG `reuse-embeddings` caches computed embeddings to `easy-rag-embeddings.json`, avoiding the embedding API call on restart. This is a dev-mode convenience: in production with a persistent embedding store (PgVector, Redis, etc.), all three would skip re-embedding on startup.
+Quarkus LangChain4j EasyRAG `reuse-embeddings` caches computed embeddings to `easy-rag-embeddings.json`, avoiding the embedding API call on restart. This is a dev-mode convenience: in production with a persistent embedding store (PgVector, Redis, etc.), all projects would skip re-embedding on startup.
 
 ### Document Parsing
 
-| | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
-|---|---|---|---|
-| **Parser used** | `TextDocumentParser` | `TextReader` | Apache Tika (via EasyRAG) |
-| **Supported formats** | Plain text only | Plain text only | Text, PDF, DOCX, HTML, images (OCR) |
+| | LangChain4j Pure | Spring AI | Quarkus LangChain4j + EasyRAG | Quarkus LangChain4j (manual RAG) |
+|---|---|---|---|---|
+| **Parser used** | `TextDocumentParser` | `TextReader` | Apache Tika (via EasyRAG) | `TextDocumentParser` |
+| **Supported formats** | Plain text only | Plain text only | Text, PDF, DOCX, HTML, images (OCR) | Plain text only |
 
-LangChain4j and Spring AI both support richer parsers as optional dependencies (`ApacheTikaDocumentParser`, `spring-ai-tika-document-reader`), but our demo projects use plain text parsers only. Quarkus EasyRAG uses Apache Tika by default, which adds to its cold-start overhead but provides multi-format support out of the box.
+LangChain4j and Spring AI both support richer parsers as optional dependencies (`ApacheTikaDocumentParser`, `spring-ai-tika-document-reader`), but our demo projects use plain text parsers only. Quarkus EasyRAG uses Apache Tika by default, which adds to its cold-start overhead but provides multi-format support out of the box. The manual RAG variant uses `TextDocumentParser`, matching the other projects, which proves the cold start difference is Tika's overhead, not Quarkus's.
 
 ### Why LangChain4j Pure appears lighter
 
-LangChain4j Pure shows lower RSS and faster startup not because it is better optimized, but because it does less: no DI container, no annotation processing, no auto-configuration, minimal web server (Javalin with embedded Jetty). Quarkus cold start pays the cost of initializing CDI, RESTEasy, Vert.x, Apache Tika, and the EasyRAG pipeline. In production, Quarkus can compile to a GraalVM native image, eliminating most of this overhead entirely (sub-second startup, ~30-50MB RSS), which neither LangChain4j Pure nor Spring AI can match without significant manual effort.
+LangChain4j Pure shows lower RSS and faster startup not because it is better optimized, but because it does less: no DI container, no annotation processing, no auto-configuration, minimal web server (Javalin with embedded Jetty). Quarkus cold start pays the cost of initializing CDI, RESTEasy, Vert.x, and either Apache Tika (EasyRAG) or the embedding pipeline (manual RAG). In production, Quarkus can compile to a GraalVM native image, eliminating most of this overhead entirely (sub-second startup, ~30-50MB RSS). Note: EasyRAG does not support native compilation; the manual RAG variant is the path to native images. Neither LangChain4j Pure nor Spring AI can match native Quarkus without significant manual effort.
 
 ## Summary
 
-| Metric | LangChain4j Pure | Spring AI | Quarkus LangChain4j |
-|---|---|---|---|
-| Java LOC (total) | 192 | 180 | **92** |
-| RAG Java LOC | ~30 | 50 (RagConfig) | **0** |
-| Separate AI Services | 3 interfaces + 3 builders | 3 ChatClients | 2 interfaces (declarative) |
-| Manual wiring | Extensive | Moderate | **None** |
-| Dependencies to manage | 8 explicit | 4 (+ BOM) | **BOM-managed** |
-| Learning curve | High | Medium | **Low** |
+| Metric | LangChain4j Pure | Spring AI | Quarkus LangChain4j + EasyRAG | Quarkus LangChain4j (manual RAG) |
+|---|---|---|---|---|
+| Java LOC (total) | 192 | 180 | **92** | ~117 |
+| RAG Java LOC | ~30 | 50 (RagConfig) | **0** | ~25 (RagConfig) |
+| Separate AI Services | 3 interfaces + 3 builders | 3 ChatClients | 2 interfaces (declarative) | 2 interfaces (declarative) |
+| Manual wiring | Extensive | Moderate | **None** | Moderate |
+| Dependencies to manage | 8 explicit | 4 (+ BOM) | **BOM-managed** | **BOM-managed** |
+| Learning curve | High | Medium | **Low** | Medium |
 
-**Bottom line**: Quarkus LangChain4j achieves the same functionality with **52% less code** than LangChain4j Pure and **49% less** than Spring AI. RAG requires zero Java code. The combination of CDI, declarative annotations, and EasyRAG makes it the most productive choice for Java AI applications.
+**Bottom line**: Quarkus LangChain4j with EasyRAG achieves the same functionality with **52% less code** than LangChain4j Pure and **49% less** than Spring AI. The manual RAG variant costs ~25 lines more but still beats both alternatives, and its cold start matches LangChain4j Pure, proving that Quarkus's slower EasyRAG startup is caused by Apache Tika, not the framework itself.
